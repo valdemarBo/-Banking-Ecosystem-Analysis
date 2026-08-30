@@ -349,6 +349,68 @@ ORDER BY default_percent DESC;
 
 ---
 
+### Анализ прибыльности и эффективности отделений
+```sql
+WITH emp_sal AS (
+    SELECT branch_id, SUM(salary) AS total_salary
+    FROM employees
+    GROUP BY branch_id
+),
+loan_interest AS (
+    SELECT branch_id, 
+           SUM((loan_amount * interest_rate) / 100) AS annual_interest_income
+    FROM loans
+    WHERE status = 'Active'
+    GROUP BY branch_id
+),
+transaction_fees AS (
+    SELECT a.branch_id,
+           SUM(t.amount * 0.005) AS estimated_fee_income
+    FROM transactions t
+    JOIN accounts a ON t.account_id = a.account_id
+    GROUP BY a.branch_id
+),
+branch_metrics AS (
+    SELECT 
+        b.branch_id,
+        b.branch_name,
+        b.city,
+        COALESCE(emp.total_salary, 0) AS salary_cost,
+        COALESCE(li.annual_interest_income, 0) AS interest_income,
+        COALESCE(tf.estimated_fee_income, 0) AS fee_income,
+        COALESCE(li.annual_interest_income, 0) + COALESCE(tf.estimated_fee_income, 0) AS total_income,
+        COALESCE(li.annual_interest_income, 0) + COALESCE(tf.estimated_fee_income, 0) - COALESCE(emp.total_salary, 0) AS net_profit
+    FROM branches b
+    LEFT JOIN emp_sal emp ON b.branch_id = emp.branch_id
+    LEFT JOIN loan_interest li ON b.branch_id = li.branch_id
+    LEFT JOIN transaction_fees tf ON b.branch_id = tf.branch_id
+)
+SELECT 
+    branch_id,
+    branch_name,
+    city,
+    ROUND(salary_cost::NUMERIC, 2) AS salary_cost,
+    ROUND(interest_income::NUMERIC, 2) AS interest_income,
+    ROUND(fee_income::NUMERIC, 2) AS fee_income,
+    ROUND(total_income::NUMERIC, 2) AS total_income,
+    ROUND(net_profit::NUMERIC, 2) AS net_profit,
+    ROUND((net_profit / NULLIF(salary_cost, 0) * 100)::NUMERIC, 2) AS profit_to_salary_ratio
+FROM branch_metrics
+ORDER BY net_profit DESC
+LIMIT 10;
+```
+<img width="1234" height="220" alt="branch_revenue_analysis" src="https://github.com/user-attachments/assets/1562bc7b-f82c-4a2d-92ef-c6c2ab66f28e" />
+
+### Описание метрик
+
+| Столбец | Перевод | Описание |
+|---------|---------|----------|
+| `salary_cost` | Расходы на зарплату | Общий фонд оплаты труда сотрудников отделения |
+| `interest_income` | Процентный доход | Доход от процентов по активным кредитам |
+| `fee_income` | Комиссионный доход | Доход от комиссий за транзакции (0.5% от суммы) |
+| `total_income` | Общий доход | Сумма процентного и комиссионного дохода |
+| `net_profit` | Чистая прибыль | Общий доход минус зарплатные расходы |
+| `profit_to_salary_ratio` | Эффективность (ROI) | Сколько прибыли приносит 1 рубль зарплаты, % |
 
 
 
