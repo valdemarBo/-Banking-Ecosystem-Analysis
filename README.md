@@ -540,6 +540,179 @@ ORDER BY month_num ASC;
 
 #### Объём погашений превышает процентный доход в 2.6 раза (4.67 млн против 1.78 млн), что говорит о здоровой структуре портфеля с преобладанием возврата тела кредита над процентными платежами.
 
+---
 
+### Анализ мошенничества по категориям транзакций
 
+```sql
+SELECT 
+    merchant_category,
+    COUNT(*) AS total_transactions,
+    SUM(CASE WHEN is_fraud = 1 THEN 1 ELSE 0 END) AS fraud_count,
+    ROUND(
+        SUM(CASE WHEN is_fraud = 1 THEN 1.0 ELSE 0.0 END) * 100.0 / COUNT(*), 
+        2
+    ) AS fraud_percentage,
+    ROUND(
+        SUM(CASE WHEN is_fraud = 1 THEN amount ELSE 0 END)::NUMERIC, 
+        2
+    ) AS fraud_amount,
+    ROUND(
+        AVG(CASE WHEN is_fraud = 1 THEN amount ELSE NULL END)::NUMERIC, 
+        2
+    ) AS avg_fraud_amount
+FROM card_transactions
+GROUP BY merchant_category
+HAVING COUNT(*) >= 10  -- только категории с >10 транзакциями
+ORDER BY fraud_count DESC;
+```
+
+<img width="962" height="296" alt="image" src="https://github.com/user-attachments/assets/c3df30bc-e1e4-4349-9b1a-fd342023d890" />
+
+### Выводы по мошенничеству по категориям
+Уровень мошенничества стабильно низкий и практически одинаков для всех категорий — от 0,48% до 0,52%, что говорит о равномерном распределении рисков без явных аномалий.
+
+ATM Withdrawal и Healthcare лидируют по числу мошеннических транзакций и суммам ущерба, что может указывать на повышенное внимание мошенников к операциям снятия наличных и медицинским платежам.
+
+Shopping и Entertainment показывают самый высокий средний чек мошенничества (~1 896 и 1 892), что делает их привлекательными целями для крупных мошеннических операций.
+
+Объём транзакций по всем категориям распределён равномерно (~213–215 тыс.), что свидетельствует о сбалансированной структуре датасета без перекосов в сторону отдельных категорий.
+
+Несмотря на синтетическую природу данных, метрики демонстрируют логичные паттерны: категории с высокими чеками (Shopping, Entertainment) привлекают более крупные мошеннические суммы.
+
+---
+
+### Cross-Sell Ratio . Процент клиентов, у которых есть не только счёт, но и активный кредитный продукт (кредит или карта)
+
+```sql
+WITH active_account_ids AS (
+    SELECT account_id FROM cards WHERE status = 'Active'
+    UNION 
+    SELECT a.account_id 
+    FROM accounts a
+    JOIN loans l ON a.customer_id = l.customer_id
+    WHERE l.status = 'Active'
+)
+SELECT 
+    a.account_type,
+    COUNT(a.account_id) AS total_accounts,
+    COUNT(active.account_id) AS active_product_accounts,
+    ROUND(COUNT(active.account_id) * 100.0 / COUNT(a.account_id), 2) AS active_product_percentage
+FROM accounts a
+LEFT JOIN active_account_ids active ON a.account_id = active.account_id
+WHERE a.account_type IN ('Savings', 'Current', 'Salary')
+GROUP BY a.account_type
+ORDER BY active_product_percentage DESC;
+```
+
+<img width="711" height="85" alt="image" src="https://github.com/user-attachments/assets/6fb38220-e880-4e0f-92c9-be61700990d9" />
+
+### Выводы по Cross-Sell Ratio
+Средний уровень кросс-продаж по всем типам счетов составляет ~56,8%, что значительно превышает среднерыночный показатель 35–45% и свидетельствует о высокой эффективности кросс-продаж в банке.
+
+Savings-счета показывают самый высокий уровень проникновения продуктов (56,96%), что делает их основным драйвером кросс-продаж и подтверждает высокую лояльность розничных клиентов.
+
+Current-счета демонстрируют результат 56,87%, что говорит о хорошей вовлечённости бизнес-клиентов, несмотря на их специфические потребности.
+
+Salary-счета показывают самый низкий показатель (56,68%), хотя разница с лидером составляет всего 0,28 процентных пункта — это статистически незначимо и может быть случайной вариацией.
+
+Общий разрыв между типами счетов составляет всего 0,28 п.п., что говорит о равномерном распределении продуктовой вовлечённости по всем сегментам клиентов.
+
+Высокий Cross-Sell Ratio (почти 57%) означает, что более половины клиентов используют как минимум два продукта банка, что является признаком сильной лояльности и снижает риск оттока.
+
+---
+
+### Риск-профиль по профессиям на основе среднего DTI (кредитной нагрузки). Это классический скоринговый анализ для оценки кредитного риска по профессиональным группам.
+
+```sql
+SELECT 
+    c.occupation,
+    COUNT(DISTINCT c.customer_id) AS borrower_count,
+    COUNT(l.loan_id) AS total_loans,
+    ROUND(AVG(c.annual_income)::NUMERIC, 2) AS avg_annual_income,
+    ROUND(AVG(l.loan_amount)::NUMERIC, 2) AS avg_loan_amount,
+    ROUND(AVG(c.credit_score)::NUMERIC, 2) AS avg_credit_score,
+    ROUND(
+        (AVG(l.loan_amount) / NULLIF(AVG(c.annual_income), 0) * 100)::NUMERIC, 
+        2
+    ) AS dti_ratio_pct,
+    SUM(CASE WHEN l.status = 'Defaulted' THEN 1 ELSE 0 END) AS default_count,
+    ROUND(
+        (SUM(CASE WHEN l.status = 'Defaulted' THEN 1 ELSE 0 END) * 100.0 / COUNT(l.loan_id))::NUMERIC, 
+        2
+    ) AS default_rate,
+    CASE 
+        WHEN (AVG(l.loan_amount) / NULLIF(AVG(c.annual_income), 0)) * 100 < 36 THEN 'Low Risk'
+        WHEN (AVG(l.loan_amount) / NULLIF(AVG(c.annual_income), 0)) * 100 < 50 THEN 'Moderate Risk'
+        WHEN (AVG(l.loan_amount) / NULLIF(AVG(c.annual_income), 0)) * 100 < 60 THEN 'High Risk'
+        ELSE 'Critical Risk'
+    END AS risk_tier
+FROM customers c
+JOIN loans l ON c.customer_id = l.customer_id
+GROUP BY c.occupation
+HAVING COUNT(l.loan_id) >= 3
+ORDER BY dti_ratio_pct DESC;
+```
+
+<img width="1418" height="164" alt="image" src="https://github.com/user-attachments/assets/1d26d28c-3d09-4799-a74c-7a5d9f6a251c" />
+
+### Выводы по DTI и кредитным рискам по профессиям
+Все категории профессий относятся к низкому уровню риска (Low Risk) с DTI от 21,59% до 23,45%, что значительно ниже порогового значения 36%. Это говорит о том, что клиенты банка имеют устойчивое финансовое положение.
+
+Business Owner демонстрирует самый высокий DTI (23,45%) и самый высокий средний доход (1,83 млн), что может указывать на активное использование кредитных продуктов для развития бизнеса.
+
+Salaried - Private показывает самый низкий DTI (21,59%), но при этом самый высокий уровень дефолтов (7,88%) и максимальную сумму кредита (253 дефолта). Это может свидетельствовать о том, что низкая кредитная нагрузка не всегда гарантирует низкий риск — возможно, сказываются внешние факторы (нестабильность работы, смена работодателя).
+
+Retired занимает второе место по DTI (23,27%) и показывает максимальный процент дефолтов (7,58%) среди всех групп, что логично: пенсионеры имеют ограниченный доход, и даже небольшая кредитная нагрузка может стать критической.
+
+Student демонстрирует наименьшее количество дефолтов (201) и минимальный процент дефолтов (6,74%) — возможно, студенты более ответственно подходят к погашению кредитов или имеют поддержку со стороны семьи.
+
+Диапазон дефолтов по профессиям варьируется от 6,74% до 7,88%, что является относительно узким диапазоном и свидетельствует о равномерном распределении рисков между профессиональными группами.
+
+---
+
+### Топ-10 клиентов по чистой финансовой ценности		
+
+```sql
+WITH customer_accounts AS (
+    SELECT 
+        customer_id, 
+        SUM(balance) AS total_balance,
+        COUNT(account_id) AS account_count
+    FROM accounts
+    GROUP BY customer_id
+),                                  
+customer_loans AS (
+    SELECT 
+        customer_id, 
+        SUM(loan_amount) AS total_loan,
+        COUNT(loan_id) AS loan_count,
+        AVG(interest_rate) AS avg_loan_rate
+    FROM loans
+    GROUP BY customer_id
+),
+customer_metrics AS (
+    SELECT 
+        c.customer_id,
+        c.name,
+        c.annual_income,
+        COALESCE(ca.total_balance, 0) AS total_balance,
+        COALESCE(cl.total_loan, 0) AS total_loan,
+        ROUND((c.annual_income + COALESCE(ca.total_balance, 0) - COALESCE(cl.total_loan, 0))::NUMERIC, 2) AS total_value
+    FROM customers c
+    LEFT JOIN customer_accounts ca ON c.customer_id = ca.customer_id
+    LEFT JOIN customer_loans cl ON c.customer_id = cl.customer_id
+)
+SELECT
+    customer_id,
+    name,
+    total_value
+FROM customer_metrics
+ORDER BY total_value DESC
+LIMIT 10;
+```
+
+<img width="379" height="220" alt="image" src="https://github.com/user-attachments/assets/8d39fbd1-0616-421e-b819-15ae14fae132" />
+
+---
 
