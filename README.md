@@ -412,6 +412,9 @@ LIMIT 10;
 | `net_profit` | Чистая прибыль | Общий доход минус зарплатные расходы |
 | `profit_to_salary_ratio` | Эффективность (ROI) | Сколько прибыли приносит 1 рубль зарплаты, % |
 
+<img width="1318" height="743" alt="image" src="https://github.com/user-attachments/assets/f86c508b-ce65-459d-9482-391a03f99a60" />
+
+
 ### ТОP 10 по прибыли и эффективности
 
 <img width="864" height="499" alt="branch_effectiveness" src="https://github.com/user-attachments/assets/a7bcf9a2-9313-4557-95bf-b6632d481d22" />
